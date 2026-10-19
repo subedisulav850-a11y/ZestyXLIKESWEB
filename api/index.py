@@ -7,8 +7,8 @@ import urllib.request
 SECRET           = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
 ADMIN_USER       = os.environ.get("ADMIN_USERNAME", "Zesty")
 ADMIN_PASS       = os.environ.get("ADMIN_PASSWORD", "676767")
-TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "")
-SITE_KEY         = os.environ.get("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "")
+TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "0x4AAAAAAFLICIokx6zHNpTP")
+SITE_KEY         = os.environ.get("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM")
 LIKE_BASE        = os.environ.get("LIKE_API_BASE", "https://zesty220likes.vercel.app/like")
 LIKE_KEY         = os.environ.get("LIKE_API_KEY", "SulavOp")
 
