@@ -1,9 +1,13 @@
 {
   "version": 2,
-  "public": true,
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "api/public/**"
+    }
+  },
   "rewrites": [
     {
-      "source": "/((?!logo\\.png).*)",
+      "source": "/(.*)",
       "destination": "/api/index"
     }
   ]
