@@ -4,7 +4,7 @@ import time, hmac, hashlib, base64, json
 import urllib.request, urllib.error
 
 # ═══════════════════════════════════════════════════════════
-# ⚙️ CONFIGURATION (All hardcoded, no environment variables needed)
+# ⚙️ CONFIGURATION
 # ═══════════════════════════════════════════════════════════
 ADMIN_USER = "Zesty"
 ADMIN_PASS = "676767"
@@ -13,11 +13,11 @@ SESSION_SECRET = "super-secret-zesty-key-change-me-if-you-want"
 LIKE_API_BASE = "https://zesty220likes.vercel.app/like"
 LIKE_API_KEY = "SulavOp"
 
-# Cloudflare Turnstile (Optional)
-# Leave these blank ("") to disable Cloudflare and skip straight to login.
-# Paste your keys here to enable Cloudflare security.
-TURNSTILE_SITE_KEY = "0x4AAAAAAFLICIokx6zHNpTP"
-TURNSTILE_SECRET_KEY = "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM"
+# ── CLOUDFLARE TURNSTILE SETUP ─────────────────────────────
+# Paste your keys between the quotes below. 
+# Example: TURNSTILE_SITE_KEY = "0x4AAAAAAAB..."
+TURNSTILE_SITE_KEY   = "0x4AAAAAAFLICIokx6zHNpTP"  # <--- PASTE SITE KEY HERE
+TURNSTILE_SECRET_KEY = "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM"  # <--- PASTE SECRET KEY HERE
 # ═══════════════════════════════════════════════════════════
 
 
@@ -92,7 +92,7 @@ HTML = r"""<!doctype html>
   button { width: 100%; padding: 12px 14px; border-radius: 10px; border: none; background: linear-gradient(135deg, #4f7cff, #8b5cf6); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; transition: opacity 0.2s, transform 0.1s; }
   button:active:not(:disabled) { transform: scale(0.98); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .cf { display: flex; justify-content: center; margin: 8px 0; min-height: 0; }
+  .cf { display: flex; justify-content: center; align-items: center; margin: 8px 0; min-height: 65px; font-size: 13px; color: var(--muted); text-align: center; }
   .err { color: #ff6b81; font-size: 13px; text-align: center; min-height: 20px; margin-bottom: 8px; font-weight: 500; }
   pre { background: #0a0f1a; padding: 16px; border-radius: 10px; font-size: 13px; overflow: auto; max-height: 260px; border: 1px solid var(--border); color: #9ae6b4; white-space: pre-wrap; word-break: break-word; margin-top: 16px; font-family: monospace; }
   .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
@@ -110,7 +110,7 @@ HTML = r"""<!doctype html>
     <input id="u" autocomplete="username" placeholder="Enter username">
     <label>Password</label>
     <input id="p" type="password" autocomplete="current-password" placeholder="Enter password">
-    <div class="cf" id="cf-login"></div>
+    <div class="cf" id="cf-login">Loading Security...</div>
     <div class="err" id="login-err"></div>
     <button id="login-btn" disabled>Login</button>
   </div>
@@ -125,7 +125,7 @@ HTML = r"""<!doctype html>
     <input id="uid" placeholder="e.g. 6662785176">
     <label>Server / Region</label>
     <input id="server" placeholder="e.g. IND">
-    <div class="cf" id="cf-like"></div>
+    <div class="cf" id="cf-like">Loading Security...</div>
     <div class="err" id="like-err"></div>
     <button id="like-btn" disabled>Send Like</button>
     <pre id="out" style="display:none"></pre>
@@ -137,13 +137,18 @@ const SITE_KEY = "__SITE_KEY__";
 let loginTok = "bypass", likeTok = "bypass";
 
 function initTurnstile() {
-  // If no Cloudflare key is hardcoded, auto-enable buttons and bypass widget
-  if (!SITE_KEY || SITE_KEY === "__SITE_KEY__") {
+  const siteKey = SITE_KEY.trim();
+  
+  // Bypass if no key is provided in the python file
+  if (!siteKey || siteKey === "__SITE_KEY__") {
+    document.getElementById("cf-login").innerHTML = "<span style='color:#8b95ad'>Security disabled (No Key)</span>";
+    document.getElementById("cf-like").innerHTML = "<span style='color:#8b95ad'>Security disabled (No Key)</span>";
     document.getElementById("login-btn").disabled = false;
     document.getElementById("like-btn").disabled = false;
     return;
   }
 
+  // Wait for Cloudflare script to load
   if (!window.turnstile) { setTimeout(initTurnstile, 300); return; }
   
   const le = document.getElementById("cf-login");
@@ -151,18 +156,30 @@ function initTurnstile() {
   
   if (le && !le.dataset.done) {
     turnstile.render(le, { 
-      siteKey: SITE_KEY, 
+      siteKey: siteKey, 
       theme: "dark",
-      callback: t => { loginTok = t; document.getElementById("login-btn").disabled = false; } 
+      callback: t => { 
+        loginTok = t; 
+        document.getElementById("login-btn").disabled = false; 
+      },
+      "error-callback": () => {
+        le.innerHTML = "<span style='color:#ff6b81'>Cloudflare Blocked. Check Domain settings or turn off AdBlocker.</span>";
+      }
     });
     le.dataset.done = "1";
   }
   
   if (ke && !ke.dataset.done) {
     turnstile.render(ke, { 
-      siteKey: SITE_KEY, 
+      siteKey: siteKey, 
       theme: "dark",
-      callback: t => { likeTok = t; document.getElementById("like-btn").disabled = false; } 
+      callback: t => { 
+        likeTok = t; 
+        document.getElementById("like-btn").disabled = false; 
+      },
+      "error-callback": () => {
+        ke.innerHTML = "<span style='color:#ff6b81'>Cloudflare Blocked. Check Domain settings or turn off AdBlocker.</span>";
+      }
     });
     ke.dataset.done = "1";
   }
@@ -174,9 +191,7 @@ async function checkAuth() {
     document.getElementById("login-view").style.display = d.auth ? "none" : "block";
     document.getElementById("like-view").style.display  = d.auth ? "block" : "none";
     initTurnstile();
-  } catch (e) {
-    console.error("Auth check failed", e);
-  }
+  } catch (e) { console.error("Auth check failed", e); }
 }
 
 document.getElementById("login-btn").onclick = async () => {
