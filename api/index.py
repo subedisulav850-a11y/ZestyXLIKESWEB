@@ -1,19 +1,22 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, quote, urlencode
-import os, time, hmac, hashlib, base64, json
+import time, hmac, hashlib, base64, json
 import urllib.request
 
-# ── Config (set these in Vercel → Environment Variables) ───
-SECRET           = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
-ADMIN_USER       = os.environ.get("ADMIN_USERNAME", "Zesty")
-ADMIN_PASS       = os.environ.get("ADMIN_PASSWORD", "676767")
-TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "0x4AAAAAAFLICIokx6zHNpTP")
-SITE_KEY         = os.environ.get("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM")
-LIKE_BASE        = os.environ.get("LIKE_API_BASE", "https://zesty220likes.vercel.app/like")
-LIKE_KEY         = os.environ.get("LIKE_API_KEY", "SulavOp")
+# ── ALL CONFIGURATION IS HARDCODED HERE ────────────────────
+SECRET               = "zesty-super-secret-cookie-key-676767"
+ADMIN_USER           = "Zesty"
+ADMIN_PASS           = "676767"
+LIKE_BASE            = "https://zesty220likes.vercel.app/like"
+LIKE_KEY             = "SulavOp"
 
+# CLOUDFLARE TURNSTILE (Optional)
+# If you leave these blank (""), Turnstile is disabled and buttons work instantly.
+# If you want security, paste your Cloudflare keys here:
+TURNSTILE_SITE_KEY   = "0x4AAAAAAFLICIokx6zHNpTP" 
+TURNSTILE_SECRET_KEY = "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM"
+# ───────────────────────────────────────────────────────────
 
-# ── Session signing ────────────────────────────────────────
 def _b64(b):  return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 def _unb64(s): return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
@@ -32,13 +35,10 @@ def verify(token):
     except Exception:
         return False
 
-
-# ── Cloudflare Turnstile ───────────────────────────────────
 def turnstile_verify(token, ip=""):
-    if not TURNSTILE_SECRET:
-        return True   # dev fallback — configure in production
+    if not TURNSTILE_SECRET_KEY: return True
     try:
-        data = urlencode({"secret": TURNSTILE_SECRET, "response": token, "remoteip": ip or ""}).encode()
+        data = urlencode({"secret": TURNSTILE_SECRET_KEY, "response": token, "remoteip": ip or ""}).encode()
         req = urllib.request.Request(
             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
             data=data, method="POST",
@@ -49,16 +49,12 @@ def turnstile_verify(token, ip=""):
     except Exception:
         return False
 
-
-# ── Like proxy ─────────────────────────────────────────────
 def call_like(uid, server):
     url = f"{LIKE_BASE}?uid={quote(uid)}&server_name={quote(server)}&key={quote(LIKE_KEY)}"
     req = urllib.request.Request(url, headers={"User-Agent": "zesty-likes/1.0"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read())
 
-
-# ── HTML ───────────────────────────────────────────────────
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -83,7 +79,7 @@ HTML = r"""<!doctype html>
          background:linear-gradient(135deg,#4f7cff,#8b5cf6);color:#fff;font-size:15px;
          font-weight:600;cursor:pointer;margin-top:8px}
   button:disabled{opacity:.5;cursor:not-allowed}
-  .cf{display:flex;justify-content:center;margin:8px 0 4px;min-height:65px}
+  .cf{display:flex;justify-content:center;margin:8px 0 4px;min-height:0px}
   .err{color:#ff6b81;font-size:13px;text-align:center;min-height:18px;margin-bottom:8px}
   pre{background:#0a0f1a;padding:14px;border-radius:10px;font-size:12px;overflow:auto;
       max-height:260px;border:1px solid #1e2638;color:#9ae6b4;white-space:pre-wrap;word-break:break-word}
@@ -122,15 +118,35 @@ const SITE_KEY = "__SITE_KEY__";
 let loginTok = "", likeTok = "";
 
 function initTurnstile() {
+  if (!SITE_KEY || SITE_KEY === "") {
+    // Bypass Cloudflare if no key is set in Python
+    document.getElementById("login-btn").disabled = false;
+    document.getElementById("like-btn").disabled = false;
+    loginTok = "bypass";
+    likeTok = "bypass";
+    return;
+  }
+
   if (!window.turnstile) { setTimeout(initTurnstile, 300); return; }
+  
   const le = document.getElementById("cf-login");
   const ke = document.getElementById("cf-like");
+  if (le) le.style.minHeight = "65px";
+  if (ke) ke.style.minHeight = "65px";
+  
   if (le && !le.dataset.done) {
-    turnstile.render(le, { siteKey: SITE_KEY, callback: t => { loginTok = t; document.getElementById("login-btn").disabled = false; } });
+    turnstile.render(le, { 
+      siteKey: SITE_KEY, 
+      callback: t => { loginTok = t; document.getElementById("login-btn").disabled = false; } 
+    });
     le.dataset.done = "1";
   }
+  
   if (ke && !ke.dataset.done) {
-    turnstile.render(ke, { siteKey: SITE_KEY, callback: t => { likeTok = t; document.getElementById("like-btn").disabled = false; } });
+    turnstile.render(ke, { 
+      siteKey: SITE_KEY, 
+      callback: t => { likeTok = t; document.getElementById("like-btn").disabled = false; } 
+    });
     ke.dataset.done = "1";
   }
 }
@@ -177,10 +193,9 @@ checkAuth();
 </script>
 </body>
 </html>
-""".replace("__SITE_KEY__", SITE_KEY)
+""".replace("__SITE_KEY__", TURNSTILE_SITE_KEY)
 
 
-# ── Request handler ────────────────────────────────────────
 class handler(BaseHTTPRequestHandler):
     def _json(self, code, obj, headers=None):
         body = json.dumps(obj).encode()
@@ -215,16 +230,12 @@ class handler(BaseHTTPRequestHandler):
         return (self.headers.get("CF-Connecting-IP")
                 or self.headers.get("X-Forwarded-For", "").split(",")[0].strip())
 
-    # ── GET ──
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/me":
             return self._json(200, {"auth": verify(self._cookie("session"))})
-        if path in ("/", "/index", "/login", "/api/index"):
-            return self._html(HTML)
-        return self._html(HTML)  # SPA fallback
+        return self._html(HTML)
 
-    # ── POST ──
     def do_POST(self):
         path = urlparse(self.path).path
         if path == "/api/login":  return self._login()
