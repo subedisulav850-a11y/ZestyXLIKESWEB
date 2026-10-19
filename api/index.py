@@ -1,333 +1,605 @@
+import os
+import json
+import time
+import hmac
+import hashlib
+import base64
+import secrets
+import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, quote, urlencode
-import time, hmac, hashlib, base64, json
-import urllib.request, urllib.error
+from urllib.parse import urlparse, parse_qs, urlencode
 
-# ═══════════════════════════════════════════════════════════
-# ⚙️ CONFIGURATION
-# ═══════════════════════════════════════════════════════════
-ADMIN_USER = "Zesty"
-ADMIN_PASS = "676767"
-SESSION_SECRET = "super-secret-zesty-key-change-me-if-you-want"
+# =========================================================
+# ZESTY LIKES CONFIGURATION
+# Keep your original defaults. Set production secrets in
+# Vercel -> Settings -> Environment Variables.
+# =========================================================
+
+ADMIN_USER = os.getenv("ADMIN_USER", "Zesty")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "676767")
+
+SESSION_SECRET = os.getenv(
+    "SESSION_SECRET",
+    "super-secret-zesty-key-change-me-if-you-want"
+)
 
 LIKE_API_BASE = "https://zesty220likes.vercel.app/like"
-LIKE_API_KEY = "SulavOp"
+LIKE_API_KEY = os.getenv("LIKE_API_KEY", "SulavOp")
 
-# ── CLOUDFLARE TURNSTILE SETUP ─────────────────────────────
-# Paste your keys between the quotes below. 
-# Example: TURNSTILE_SITE_KEY = "0x4AAAAAAAB..."
-TURNSTILE_SITE_KEY   = "0x4AAAAAAFLICIokx6zHNpTP"  # <--- PASTE SITE KEY HERE
-TURNSTILE_SECRET_KEY = "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM"  # <--- PASTE SECRET KEY HERE
-# ═══════════════════════════════════════════════════════════
+TURNSTILE_SITE_KEY = os.getenv(
+    "TURNSTILE_SITE_KEY",
+    "0x4AAAAAAFLICIokx6zHNpTP"
+)
+TURNSTILE_SECRET_KEY = os.getenv(
+    "TURNSTILE_SECRET_KEY",
+    "0x4AAAAAAFLICCXoXBACekHvukmgiMglLwM"
+)
 
+SESSION_SECONDS = 8 * 60 * 60
+MAX_BODY = 16384
+COOKIE_NAME = "zesty_session"
 
-# ── Security & Session Signing ─────────────────────────────
-def _b64(b):  return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-def _unb64(s): return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+# =========================================================
+# HTML FRONTEND
+# /logo.png is served from the root-level public directory.
+# =========================================================
 
-def sign_session(data: dict) -> str:
-    payload = _b64(json.dumps({**data, "exp": int(time.time() * 1000) + 8 * 3600 * 1000}).encode())
-    sig = _b64(hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
-    return f"{payload}.{sig}"
-
-def verify_session(token: str) -> bool:
-    if not token or "." not in token: return False
-    p, _, s = token.partition(".")
-    expected = _b64(hmac.new(SESSION_SECRET.encode(), p.encode(), hashlib.sha256).digest())
-    if not hmac.compare_digest(s, expected): return False
-    try:
-        return json.loads(_unb64(p)).get("exp", 0) > int(time.time() * 1000)
-    except Exception:
-        return False
-
-
-# ── Cloudflare Turnstile ───────────────────────────────────
-def verify_turnstile(token: str, ip: str = "") -> bool:
-    if not TURNSTILE_SECRET_KEY:
-        return True # Bypass if no secret key is set
-    try:
-        data = urlencode({"secret": TURNSTILE_SECRET_KEY, "response": token, "remoteip": ip or ""}).encode()
-        req = urllib.request.Request(
-            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-            data=data, method="POST",
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read()).get("success") is True
-    except Exception:
-        return False
-
-
-# ── API Proxy Logic ────────────────────────────────────────
-def fetch_like_api(uid: str, server_name: str) -> dict:
-    url = f"{LIKE_API_BASE}?uid={quote(uid)}&server_name={quote(server_name)}&key={quote(LIKE_API_KEY)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "ZestyLikes/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return {"error": f"API Error {e.code}", "details": e.read().decode()}
-    except Exception as e:
-        return {"error": "Connection failed", "details": str(e)}
-
-
-# ── Frontend HTML/CSS/JS ───────────────────────────────────
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0e17">
 <title>Zesty Likes</title>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 <style>
-  :root { --bg: #0b0f1a; --card: #131826; --border: #1e2638; --input: #0f1524; --text: #e6e8ee; --muted: #8b95ad; --accent: #4f7cff; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-  .card { width: 100%; max-width: 420px; background: var(--card); padding: 32px 24px; border-radius: 16px; border: 1px solid var(--border); box-shadow: 0 10px 40px rgba(0,0,0,.6); }
-  .logo { width: 88px; height: 88px; border-radius: 20px; display: block; margin: 0 auto 16px; background: var(--border); object-fit: contain; }
-  h1 { text-align: center; margin: 0 0 24px; font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
-  input { width: 100%; padding: 12px 14px; margin-bottom: 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--input); color: var(--text); font-size: 14px; outline: none; transition: border-color 0.2s; }
-  input:focus { border-color: var(--accent); }
-  button { width: 100%; padding: 12px 14px; border-radius: 10px; border: none; background: linear-gradient(135deg, #4f7cff, #8b5cf6); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; transition: opacity 0.2s, transform 0.1s; }
-  button:active:not(:disabled) { transform: scale(0.98); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .cf { display: flex; justify-content: center; align-items: center; margin: 8px 0; min-height: 65px; font-size: 13px; color: var(--muted); text-align: center; }
-  .err { color: #ff6b81; font-size: 13px; text-align: center; min-height: 20px; margin-bottom: 8px; font-weight: 500; }
-  pre { background: #0a0f1a; padding: 16px; border-radius: 10px; font-size: 13px; overflow: auto; max-height: 260px; border: 1px solid var(--border); color: #9ae6b4; white-space: pre-wrap; word-break: break-word; margin-top: 16px; font-family: monospace; }
-  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-  .top h1 { margin: 0; text-align: left; }
-  .logout { background: #2a3450; width: auto; padding: 8px 14px; font-size: 13px; margin: 0; }
+:root{
+  color-scheme:dark;
+  --bg:#090c14;--panel:#111725;--border:#273149;
+  --text:#eef2ff;--muted:#99a6c0;--blue:#6688ff;
+  --danger:#ff7185;--green:#7de2b0;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;min-height:100vh;padding:22px;display:grid;place-items:center;
+  background:radial-gradient(ellipse at top,#1a2545 0%,#0b101c 48%,#080b12 100%);
+  color:var(--text);font-family:Inter,system-ui,-apple-system,sans-serif;
+}
+.card{
+  width:100%;max-width:440px;padding:28px 24px;
+  border:1px solid var(--border);border-radius:20px;
+  background:rgba(17,23,37,.96);box-shadow:0 24px 80px #0007;
+}
+.brand{text-align:center;margin-bottom:24px}
+.logo{
+  width:82px;height:82px;object-fit:contain;display:block;
+  margin:0 auto 13px;border-radius:18px;
+}
+h1{font-size:25px;letter-spacing:-.5px;margin:0}
+.subtitle{font-size:13px;color:var(--muted);margin-top:7px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+.top h2{font-size:22px;margin:0}
+label{display:block;font-size:13px;color:var(--muted);margin:15px 0 7px}
+input,select{
+  width:100%;padding:13px 14px;border:1px solid var(--border);
+  border-radius:11px;background:#0b111e;color:var(--text);font-size:15px;
+  outline:none;
+}
+input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px #6688ff20}
+button{
+  border:0;border-radius:11px;padding:12px 15px;
+  background:linear-gradient(130deg,#4d7cff,#835cf6);
+  color:white;font-weight:700;font-size:14px;cursor:pointer;
+}
+button:disabled{opacity:.5;cursor:not-allowed}
+.primary{width:100%;min-height:46px;margin-top:10px}
+.secondary{background:#27334c}
+.cf{min-height:76px;display:flex;align-items:center;justify-content:center;
+    margin:12px 0 7px;overflow:hidden}
+.message{font-size:13px;line-height:1.5;min-height:20px;margin:8px 0;color:var(--danger);overflow-wrap:anywhere}
+.result{
+  display:none;margin-top:18px;padding:14px;border:1px solid var(--border);
+  border-radius:12px;background:#0a101b;
+}
+.result h3{font-size:14px;margin:0 0 10px}
+.result pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:var(--green)}
+.footer{text-align:center;color:#77839c;font-size:12px;margin-top:22px}
+.small{font-size:12px;color:var(--muted);line-height:1.5}
+[hidden]{display:none!important}
+@media(max-width:380px){.card{padding:23px 17px}.cf{justify-content:flex-start}}
 </style>
 </head>
 <body>
-<div class="card">
-  <!-- Login View -->
-  <div id="login-view">
-    <img class="logo" src="/logo.png" alt="Logo" onerror="this.style.display='none'">
+<main class="card">
+  <div class="brand">
+    <img class="logo" src="/logo.png" alt="Zesty logo"
+         onerror="this.style.display='none'">
     <h1>Zesty Likes</h1>
-    <label>Username</label>
-    <input id="u" autocomplete="username" placeholder="Enter username">
-    <label>Password</label>
-    <input id="p" type="password" autocomplete="current-password" placeholder="Enter password">
-    <div class="cf" id="cf-login">Loading Security...</div>
-    <div class="err" id="login-err"></div>
-    <button id="login-btn" disabled>Login</button>
+    <div class="subtitle">Free Fire Likes Panel</div>
   </div>
 
-  <!-- Like View -->
-  <div id="like-view" style="display:none">
+  <section id="login-view">
+    <form id="login-form">
+      <label for="username">Username</label>
+      <input id="username" autocomplete="username" required maxlength="100"
+             placeholder="Enter username">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password"
+             required maxlength="200" placeholder="Enter password">
+      <div class="cf" id="cf-login">Loading human verification…</div>
+      <div class="message" id="login-message" role="alert"></div>
+      <button class="primary" id="login-button" disabled>Complete verification</button>
+    </form>
+  </section>
+
+  <section id="like-view" hidden>
     <div class="top">
-      <h1>Send Like</h1>
-      <button class="logout" id="logout-btn">Logout</button>
+      <h2>Send Likes</h2>
+      <button type="button" class="secondary" id="logout-button">Logout</button>
     </div>
-    <label>UID</label>
-    <input id="uid" placeholder="e.g. 6662785176">
-    <label>Server / Region</label>
-    <input id="server" placeholder="e.g. IND">
-    <div class="cf" id="cf-like">Loading Security...</div>
-    <div class="err" id="like-err"></div>
-    <button id="like-btn" disabled>Send Like</button>
-    <pre id="out" style="display:none"></pre>
-  </div>
-</div>
+    <p class="small">Enter a player UID and the correct server region.</p>
+    <form id="like-form">
+      <label for="uid">Player UID</label>
+      <input id="uid" required maxlength="30" inputmode="numeric"
+             pattern="[0-9]{1,30}" placeholder="Enter player UID">
+      <label for="region">Server region</label>
+      <select id="region" required>
+        <option value="">Select region</option>
+        <option value="BD">BD — Bangladesh</option>
+        <option value="IND">IND — India</option>
+        <option value="PK">PK — Pakistan</option>
+        <option value="SG">SG — Singapore</option>
+        <option value="ID">ID — Indonesia</option>
+        <option value="ME">ME — Middle East</option>
+        <option value="VN">VN — Vietnam</option>
+        <option value="TH">TH — Thailand</option>
+        <option value="TW">TW — Taiwan</option>
+        <option value="EU">EU — Europe</option>
+        <option value="RU">RU — Russia</option>
+      </select>
+      <div class="cf" id="cf-like">Loading human verification…</div>
+      <div class="message" id="like-message" role="alert"></div>
+      <button class="primary" id="like-button" disabled>Complete verification</button>
+    </form>
+    <div class="result" id="result">
+      <h3>API Response</h3>
+      <pre id="result-data"></pre>
+    </div>
+  </section>
+
+  <div class="footer">Protected by Cloudflare Turnstile</div>
+</main>
 
 <script>
-const SITE_KEY = "__SITE_KEY__";
-let loginTok = "bypass", likeTok = "bypass";
+"use strict";
 
-function initTurnstile() {
-  const siteKey = SITE_KEY.trim();
-  
-  // Bypass if no key is provided in the python file
-  if (!siteKey || siteKey === "__SITE_KEY__") {
-    document.getElementById("cf-login").innerHTML = "<span style='color:#8b95ad'>Security disabled (No Key)</span>";
-    document.getElementById("cf-like").innerHTML = "<span style='color:#8b95ad'>Security disabled (No Key)</span>";
-    document.getElementById("login-btn").disabled = false;
-    document.getElementById("like-btn").disabled = false;
+const SITE_KEY = "__TURNSTILE_SITE_KEY__";
+const $ = id => document.getElementById(id);
+
+let turnstileReady = false;
+let loginWidget = null;
+let likeWidget = null;
+let loginToken = "";
+let likeToken = "";
+let sendingLogin = false;
+let sendingLike = false;
+
+function setMessage(id, text) {
+  $(id).textContent = text || "";
+}
+
+function showView(isLoggedIn) {
+  $("login-view").hidden = isLoggedIn;
+  $("like-view").hidden = !isLoggedIn;
+
+  if (turnstileReady) {
+    if (isLoggedIn) renderWidget("like");
+    else renderWidget("login");
+  }
+}
+
+function renderWidget(which) {
+  if (!turnstileReady || !window.turnstile) return;
+
+  const isLogin = which === "login";
+  if (isLogin && loginWidget !== null) return;
+  if (!isLogin && likeWidget !== null) return;
+
+  const target = isLogin ? $("cf-login") : $("cf-like");
+  target.textContent = "";
+
+  const id = turnstile.render(target, {
+    sitekey: SITE_KEY,
+    theme: "dark",
+    callback: token => {
+      if (isLogin) {
+        loginToken = token;
+        $("login-button").disabled = false;
+        $("login-button").textContent = "Login";
+        setMessage("login-message", "");
+      } else {
+        likeToken = token;
+        $("like-button").disabled = false;
+        $("like-button").textContent = "Send Likes";
+        setMessage("like-message", "");
+      }
+    },
+    "expired-callback": () => {
+      if (isLogin) {
+        loginToken = "";
+        $("login-button").disabled = true;
+        $("login-button").textContent = "Verify again";
+      } else {
+        likeToken = "";
+        $("like-button").disabled = true;
+        $("like-button").textContent = "Verify again";
+      }
+    },
+    "error-callback": () => {
+      if (isLogin) {
+        loginToken = "";
+        $("login-button").disabled = true;
+        setMessage("login-message", "Cloudflare verification failed. Please retry.");
+      } else {
+        likeToken = "";
+        $("like-button").disabled = true;
+        setMessage("like-message", "Cloudflare verification failed. Please retry.");
+      }
+    }
+  });
+
+  if (isLogin) loginWidget = id;
+  else likeWidget = id;
+}
+
+function resetWidget(which) {
+  if (!turnstileReady || !window.turnstile) return;
+
+  if (which === "login") {
+    loginToken = "";
+    $("login-button").disabled = true;
+    $("login-button").textContent = "Complete verification";
+    if (loginWidget !== null) turnstile.reset(loginWidget);
+  } else {
+    likeToken = "";
+    $("like-button").disabled = true;
+    $("like-button").textContent = "Complete verification";
+    if (likeWidget !== null) turnstile.reset(likeWidget);
+  }
+}
+
+async function api(path, body) {
+  const options = {
+    method: body ? "POST" : "GET",
+    credentials: "same-origin",
+    headers: { "Accept": "application/json" }
+  };
+  if (body) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(path, options);
+  let data;
+  try { data = await response.json(); }
+  catch (_) { throw new Error("The server returned an invalid response."); }
+
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || "Request failed.");
+  }
+  return data;
+}
+
+$("login-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (sendingLogin) return;
+
+  if (!loginToken) {
+    setMessage("login-message", "Complete Cloudflare verification first.");
     return;
   }
 
-  // Wait for Cloudflare script to load
-  if (!window.turnstile) { setTimeout(initTurnstile, 300); return; }
-  
-  const le = document.getElementById("cf-login");
-  const ke = document.getElementById("cf-like");
-  
-  if (le && !le.dataset.done) {
-    turnstile.render(le, { 
-      siteKey: siteKey, 
-      theme: "dark",
-      callback: t => { 
-        loginTok = t; 
-        document.getElementById("login-btn").disabled = false; 
-      },
-      "error-callback": () => {
-        le.innerHTML = "<span style='color:#ff6b81'>Cloudflare Blocked. Check Domain settings or turn off AdBlocker.</span>";
-      }
+  sendingLogin = true;
+  $("login-button").disabled = true;
+  $("login-button").textContent = "Signing in…";
+  setMessage("login-message", "");
+
+  try {
+    await api("/api/login", {
+      username: $("username").value.trim(),
+      password: $("password").value,
+      turnstile_token: loginToken
     });
-    le.dataset.done = "1";
+    $("password").value = "";
+    showView(true);
+    resetWidget("like");
+  } catch (error) {
+    setMessage("login-message", error.message);
+  } finally {
+    sendingLogin = false;
+    resetWidget("login");
   }
-  
-  if (ke && !ke.dataset.done) {
-    turnstile.render(ke, { 
-      siteKey: siteKey, 
-      theme: "dark",
-      callback: t => { 
-        likeTok = t; 
-        document.getElementById("like-btn").disabled = false; 
-      },
-      "error-callback": () => {
-        ke.innerHTML = "<span style='color:#ff6b81'>Cloudflare Blocked. Check Domain settings or turn off AdBlocker.</span>";
-      }
+});
+
+$("like-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (sendingLike) return;
+
+  if (!likeToken) {
+    setMessage("like-message", "Complete Cloudflare verification first.");
+    return;
+  }
+
+  sendingLike = true;
+  $("like-button").disabled = true;
+  $("like-button").textContent = "Processing…";
+  $("result").style.display = "none";
+  setMessage("like-message", "");
+
+  try {
+    const data = await api("/api/like", {
+      uid: $("uid").value.trim(),
+      region: $("region").value,
+      turnstile_token: likeToken
     });
-    ke.dataset.done = "1";
+
+    $("result-data").textContent = JSON.stringify(data.data, null, 2);
+    $("result").style.display = "block";
+  } catch (error) {
+    setMessage("like-message", error.message);
+
+    if (error.message.toLowerCase().includes("login")) {
+      showView(false);
+    }
+  } finally {
+    sendingLike = false;
+    resetWidget("like");
+  }
+});
+
+$("logout-button").addEventListener("click", async () => {
+  try { await api("/api/logout", {}); } catch (_) {}
+  showView(false);
+  resetWidget("login");
+  setMessage("login-message", "You have been logged out.");
+});
+
+async function initialize() {
+  try {
+    const data = await api("/api/me");
+    showView(Boolean(data.authenticated));
+  } catch (_) {
+    showView(false);
   }
 }
 
-async function checkAuth() {
-  try {
-    const d = await fetch("/api/me").then(r => r.json());
-    document.getElementById("login-view").style.display = d.auth ? "none" : "block";
-    document.getElementById("like-view").style.display  = d.auth ? "block" : "none";
-    initTurnstile();
-  } catch (e) { console.error("Auth check failed", e); }
+function waitForTurnstile() {
+  if (window.turnstile) {
+    turnstileReady = true;
+    renderWidget($("login-view").hidden ? "like" : "login");
+    return;
+  }
+  setTimeout(waitForTurnstile, 150);
 }
 
-document.getElementById("login-btn").onclick = async () => {
-  const err = document.getElementById("login-err"); 
-  const btn = document.getElementById("login-btn"); 
-  err.textContent = ""; 
-  btn.disabled = true; 
-  btn.textContent = "Checking...";
-  
-  try {
-    const r = await fetch("/api/login", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: u.value, password: p.value, token: loginTok })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || "Invalid credentials");
-    await checkAuth();
-  } catch (e) {
-    err.textContent = e.message;
-    btn.disabled = false; 
-  } finally {
-    btn.textContent = "Login";
-  }
-};
-
-document.getElementById("logout-btn").onclick = async () => {
-  await fetch("/api/logout", { method: "POST" });
-  checkAuth();
-};
-
-document.getElementById("like-btn").onclick = async () => {
-  const err = document.getElementById("like-err"); 
-  const out = document.getElementById("out"); 
-  const btn = document.getElementById("like-btn"); 
-  err.textContent = ""; 
-  out.style.display = "none";
-  btn.disabled = true; 
-  btn.textContent = "Sending...";
-  
-  try {
-    const r = await fetch("/api/like", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ uid: uid.value, server_name: server.value, token: likeTok })
-    });
-    const d = await r.json();
-    
-    if (!r.ok) throw new Error(d.error || "Request failed");
-    
-    out.textContent = JSON.stringify(d, null, 2); 
-    out.style.display = "block";
-  } catch (e) {
-    err.textContent = e.message;
-  } finally {
-    btn.disabled = false; 
-    btn.textContent = "Send Like";
-  }
-};
-
-checkAuth();
+initialize();
+waitForTurnstile();
 </script>
 </body>
 </html>
-""".replace("__SITE_KEY__", TURNSTILE_SITE_KEY)
+"""
+
+# =========================================================
+# SERVERLESS REQUEST HANDLER
+# =========================================================
+
+def json_bytes(data):
+    return json.dumps(data, separators=(",", ":")).encode("utf-8")
 
 
-# ── Server Request Handler ─────────────────────────────────
 class handler(BaseHTTPRequestHandler):
-    def _json(self, code: int, obj: dict, headers: list = None):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in (headers or []): self.send_header(k, v)
+    def log_message(self, fmt, *args):
+        # Avoid logging credentials or request bodies.
+        print("%s - %s" % (self.client_address[0], fmt % args))
+
+    def send_bytes(self, status, content, content_type, extra_headers=None):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
+            "frame-src https://challenges.cloudflare.com; "
+            "connect-src 'self' https://challenges.cloudflare.com; "
+            "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        )
+        if extra_headers:
+            for key, value in extra_headers.items():
+                self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(body)
+        if content:
+            self.wfile.write(content)
 
-    def _html(self, html: str):
-        body = html.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def send_json(self, status, data, extra_headers=None):
+        self.send_bytes(
+            status,
+            json_bytes(data),
+            "application/json; charset=utf-8",
+            extra_headers
+        )
 
-    def _get_cookie(self, name: str) -> str:
-        for part in self.headers.get("Cookie", "").split(";"):
-            k, _, v = part.strip().partition("=")
-            if k == name: return v
-        return None
+    def read_json(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return None
 
-    def _get_body(self) -> dict:
-        n = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(n) if n else b""
-        try: return json.loads(raw or b"{}")
-        except Exception: return {}
+        if length < 1 or length > MAX_BODY:
+            return None
 
-    def _get_ip(self) -> str:
-        return (self.headers.get("CF-Connecting-IP")
-                or self.headers.get("X-Forwarded-For", "").split(",")[0].strip())
+        try:
+            raw = self.rfile.read(length)
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def cookie_value(self):
+        raw = self.headers.get("Cookie", "")
+        for item in raw.split(";"):
+            name, sep, value = item.strip().partition("=")
+            if sep and name == COOKIE_NAME:
+                return value
+        return ""
+
+    def authenticated(self):
+        return verify_session(self.cookie_value())
+
+    def client_ip(self):
+        # Use the socket peer, not arbitrary X-Forwarded-For input.
+        return self.client_address[0] if self.client_address else ""
+
+    def set_session_cookie(self):
+        token = sign_session()
+        # Vercel serves the production site over HTTPS.
+        cookie = (
+            f"{COOKIE_NAME}={token}; Path=/; HttpOnly; Secure; "
+            f"SameSite=Lax; Max-Age={SESSION_SECONDS}"
+        )
+        return {"Set-Cookie": cookie}
+
+    def clear_session_cookie(self):
+        return {
+            "Set-Cookie": (
+                f"{COOKIE_NAME}=; Path=/; HttpOnly; Secure; "
+                "SameSite=Lax; Max-Age=0"
+            )
+        }
 
     def do_GET(self):
         path = urlparse(self.path).path
+
+        if path == "/":
+            page = HTML.replace(
+                "__TURNSTILE_SITE_KEY__", TURNSTILE_SITE_KEY
+            ).encode("utf-8")
+            self.send_bytes(200, page, "text/html; charset=utf-8")
+            return
+
         if path == "/api/me":
-            auth = verify_session(self._get_cookie("session"))
-            return self._json(200, {"auth": auth})
-        return self._html(HTML)
+            self.send_json(200, {
+                "ok": True,
+                "authenticated": self.authenticated()
+            })
+            return
+
+        self.send_json(404, {"ok": False, "error": "Not found"})
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/api/login":  return self._handle_login()
-        if path == "/api/like":   return self._handle_like()
-        if path == "/api/logout":
-            return self._json(200, {"ok": True}, [("Set-Cookie", "session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")])
-        return self._json(404, {"error": "Not found"})
+        body = self.read_json()
 
-    def _handle_login(self):
-        d = self._get_body()
-        if not verify_turnstile(d.get("token", ""), self._get_ip()):
-            return self._json(400, {"error": "Security check failed. Please refresh."})
-        if d.get("username") != ADMIN_USER or d.get("password") != ADMIN_PASS:
-            return self._json(401, {"error": "Invalid username or password"})
-        
-        cookie = sign_session({"u": d["username"]})
-        return self._json(200, {"ok": True}, [("Set-Cookie", f"session={cookie}; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Lax")])
+        if body is None:
+            self.send_json(400, {
+                "ok": False,
+                "error": "Invalid or oversized JSON request"
+            })
+            return
 
-    def _handle_like(self):
-        if not verify_session(self._get_cookie("session")):
-            return self._json(401, {"error": "Unauthorized. Please log in again."})
-        
-        d = self._get_body()
-        if not verify_turnstile(d.get("token", ""), self._get_ip()):
-            return self._json(400, {"error": "Security check failed. Please refresh."})
-        
-        uid, server = str(d.get("uid", "")).strip(), str(d.get("server_name", "")).strip()
-        if not uid or not server:
-            return self._json(400, {"error": "Both UID and Server fields are required."})
+        if path == "/api/login":
+            self.handle_login(body)
+        elif path == "/api/like":
+            self.handle_like(body)
+        elif path == "/api/logout":
+            self.send_json(
+                200,
+                {"ok": True, "message": "Logged out"},
+                self.clear_session_cookie()
+            )
+        else:
+            self.send_json(404, {"ok": False, "error": "Not found"})
+
+    def handle_login(self, body):
+        username = body.get("username")
+        password = body.get("password")
+        token = body.get("turnstile_token")
+
+        if not isinstance(username, str) or not isinstance(password, str):
+            self.send_json(400, {"ok": False, "error": "Enter username and password"})
+            return
+
+        if not isinstance(token, str) or not verify_turnstile(
+            token, self.client_ip()
+        ):
+            self.send_json(400, {
+                "ok": False,
+                "error": "Cloudflare verification failed. Please verify again."
+            })
+            return
+
+        user_ok = hmac.compare_digest(username, ADMIN_USER)
+        pass_ok = hmac.compare_digest(password, ADMIN_PASS)
+
+        if not (user_ok and pass_ok):
+            self.send_json(401, {
+                "ok": False,
+                "error": "Invalid username or password"
+            })
+            return
+
+        self.send_json(
+            200,
+            {"ok": True, "message": "Login successful"},
+            self.set_session_cookie()
+        )
+
+    def handle_like(self, body):
+        if not self.authenticated():
+            self.send_json(401, {
+                "ok": False,
+                "error": "Login required. Please sign in again."
+            })
+            return
+
+        uid = body.get("uid")
+        region = body.get("region")
+        token = body.get("turnstile_token")
+
+        if not isinstance(uid, str) or not uid.isdigit() or not (1 <= len(uid) <= 30):
+            self.send_json(400, {"ok": False, "error": "Enter a valid numeric UID"})
+            return
+
+        allowed_regions = {
+            "BD", "IND", "PK", "SG", "ID", "ME",
+            "VN", "TH", "TW", "EU", "RU"
+        }
+        if not isinstance(region, str) or region not in allowed_regions:
+            self.send_json(400, {"ok": False, "error": "Choose a valid region"})
+            return
+
+        if not isinstance(token, str) or not verify_turnstile(
+            token, self.client_ip()
+        ):
+            self.send_json(400, {
+                "ok": False,
+                "error": "Cloudflare verification failed. Please verify again."
+            })
+            return
+
+        status, result = fetch_like_api(uid, region)
+        if status != 200:
+            self.send_json(status, {"ok": False, **result})
+            return
+
+        self.send_json(200, {"ok": True, "data": result})
+
+
+# Vercel discovers the `handler` class as its Python function entry point.
             
-        result = fetch_like_api(uid, server)
-        return self._json(200, result)
